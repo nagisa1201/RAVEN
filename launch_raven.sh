@@ -70,7 +70,8 @@ tmux send-keys -t "$SESSION:airstack" "cd $RAVEN/AirStack && ISAAC_SIM_SCRIPT_NA
 
 # Window 2: RayFronts — start container and run mapping server directly (no manual shell step)
 tmux new-window -t "$SESSION" -n "rayfronts"
-tmux send-keys -t "$SESSION:rayfronts" "docker run -it --rm --name rayfronts_container --gpus all --network host --ipc host --privileged --runtime=nvidia -e NVIDIA_DRIVER_CAPABILITIES=all -e ROS_DOMAIN_ID=1 -e ISAAC_SIM_SCRIPT_NAME=$ISAAC_SIM_SCRIPT_NAME -e DRONE_X=$DRONE_X -e DRONE_Y=$DRONE_Y -e DRONE_Z=$DRONE_Z -e DRONE_QX=$DRONE_QX -e DRONE_QY=$DRONE_QY -e DRONE_QZ=$DRONE_QZ -e DRONE_QW=$DRONE_QW -v $RAVEN/RayFronts:/workspace/RayFronts -w /workspace/RayFronts rayfronts:desktop bash -i /workspace/RayFronts/run_mapping_server_rosnode.sh" Enter
+printf -v rayfronts_command '%q ' env "ISAAC_SIM_SCRIPT_NAME=$ISAAC_SIM_SCRIPT_NAME" "DRONE_X=$DRONE_X" "DRONE_Y=$DRONE_Y" "DRONE_Z=$DRONE_Z" "DRONE_QX=$DRONE_QX" "DRONE_QY=$DRONE_QY" "DRONE_QZ=$DRONE_QZ" "DRONE_QW=$DRONE_QW" "$RAVEN/start_rayfronts.sh"
+tmux send-keys -t "$SESSION:rayfronts" "$rayfronts_command" Enter
 
 # Window 3: Input prompt — wait for container to be ready, then exec in
 tmux new-window -t "$SESSION" -n "input"

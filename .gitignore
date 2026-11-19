@@ -1,0 +1,7 @@
+# Local runtime artifacts; experiment logs live in ~/.cache/raven by default.
+__pycache__/
+*.py[cod]
+*.log
+.cache/
+.env.local
+.env.*.local

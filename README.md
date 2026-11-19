@@ -1,3 +1,5 @@
+> **Fork 使用说明：** 本仓库保存本地 RAVEN 复现实验改动。统一构建、带参启动、与原仓库的差异及已知限制见 [LOCAL_CHANGES.md](LOCAL_CHANGES.md)。以下保留原项目 README 与作者信息。
+
 <p align="center">
 <h1 align="center">RAVEN: Resilient Aerial Navigation via Open-Set Semantic Memory and Behavior Adaptation</h1>
 <h3 class="is-size-5 has-text-weight-bold" style="color: orange;" align="center">
