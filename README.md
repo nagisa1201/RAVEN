@@ -136,6 +136,28 @@ stop the setup with a log path; they never report a successful installation.
 Logs are under the student's `~/.cache/raven/{setup,build,isaac6-smoke}/`.
 The original upstream manual instructions below are retained for reference.
 
+For a server without Internet access, the administrator can install the host
+requirements from a prepared, checksummed Ubuntu package bundle:
+
+```bash
+bash RAVEN_setup.sh --user STUDENT --offline-host /path/to/host-bundle --dry-run
+sudo bash RAVEN_setup.sh --user STUDENT --offline-host /path/to/host-bundle
+```
+
+This mode uses only the bundle's `.deb` files and the server's installed-package
+database. It does not update online APT sources, build/pull images, download
+models, replace the GPU driver, or start an experiment. The bundle must match
+the server's Ubuntu release, amd64 architecture and installed dependencies;
+the dry run checks the dependency plan before an administrator changes anything.
+It contains `bundle.json`, `SHA256SUMS`, and `debs/*.deb`, prepared on a connected
+machine against the server's package inventory and transferred over SSH.
+
+After the host installation and a new SSH login, the student can import saved
+Docker images and copy model/Isaac asset files without sudo. **Host installation
+alone does not make the experiment offline-ready:** model loading must use local
+files, and Isaac's referenced assets must resolve locally. Full offline runtime
+validation is still required before claiming that the experiment can run.
+
 ## Setup
 
 First, clone this repository.
