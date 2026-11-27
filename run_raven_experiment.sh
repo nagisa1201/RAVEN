@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 # 改下面的配置后直接运行 ./run_raven_experiment.sh，无需重复输入长命令。
 # ./run_raven_experiment.sh --dry-run 仅预览；额外参数会原样传给 Python 启动器。
 # Ctrl+C 交给统一启动器保存结果并停止本轮容器。
 set -Eeuo pipefail
+# Variables in the configuration block are read via ${!name} by add_switch.
 
 # ==================== 实验配置 ====================
 SCENE="ConstructionSite"        # 场景名称，与 *_Launch.py 对应
 TASK="cabling winches"          # 支持带空格的类别，如 "water tower"
 USE_LVLM=true
-LOW_VRAM=true                    # 节省观察窗口显存；不显示 Isaac 主窗口
+LOW_VRAM=false                    # 节省观察窗口显存；不显示 Isaac 主窗口
 DISABLE_MACVO=true               # 当前仿真控制链路未使用的 MACVO
 KEEP_RANDOM_WALK=false           # 通常关闭，避免与 RayFronts 竞争全局路径
 AUTO_TAKEOFF=true
@@ -35,6 +37,54 @@ POSE_ARGS=()                     # 留空用场景默认值；例：(--x 0 --y 0
 RAVEN_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCHER="$RAVEN_ROOT/launch_raven_console.py"
 [[ -f "$LAUNCHER" ]] || { printf '找不到启动器：%s\n' "$LAUNCHER" >&2; exit 1; }
+
+# 安装脚本读取同一份配置，不复制或修改实验参数。
+if [[ ${1:-} == --deployment-config ]]; then
+    python3 - "$SCENE" "$USE_LVLM" <<'PYCONFIG'
+import json, sys
+print(json.dumps({'scene':sys.argv[1], 'lvlm':sys.argv[2]=='true'}))
+PYCONFIG
+    exit 0
+fi
+
+check_environment() (
+    set +u
+    source "$RAVEN_ROOT/AirStack/.env"
+    set -u
+    [[ ${ISAAC_SIM_VERSION:-} == 6.0.0 ]] || { echo 'AirStack 必须配置 ISAAC_SIM_VERSION=6.0.0' >&2; exit 1; }
+    for command in docker nvidia-smi python3 Xvfb xauth xdpyinfo; do
+        command -v "$command" >/dev/null || { echo "缺少 $command；请由老师执行 RAVEN_setup.sh" >&2; exit 1; }
+    done
+    docker info >/dev/null 2>&1 || { echo '当前账号不能访问 Docker；老师安装完成后请重新连接 SSH，以加载 docker 组权限。' >&2; exit 1; }
+    nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+    images=(rayfronts:desktop "${PROJECT_DOCKER_REGISTRY}/${PROJECT_NAME}:v${ISAAC_SIM_IMAGE_TAG}_isaac-sim"
+        "${PROJECT_DOCKER_REGISTRY}/${PROJECT_NAME}:v${DOCKER_IMAGE_TAG}_robot-x86-64" "airstack-cli:v${DOCKER_IMAGE_TAG}")
+    [[ "$USE_LVLM" != true ]] || images+=(lvlm:latest)
+    docker image inspect "${images[@]}" >/dev/null || { echo '实验镜像未构建完整；执行 build_raven_images.sh --prepare-runtime' >&2; exit 1; }
+    [[ -s "$RAVEN_ROOT/AirStack/scenes/$SCENE/${SCENE}_Export.usd" ]] || { echo "缺少 $SCENE 场景；执行 build_raven_images.sh --prepare-runtime" >&2; exit 1; }
+    [[ -s "$RAVEN_ROOT/RayFronts/rayfronts/annotations/$SCENE.json" ]] || { echo '缺少场景评估标注' >&2; exit 1; }
+    echo '[检查通过] Isaac Sim 6.0 镜像、GPU、Docker 权限、SSH 显示工具及当前场景齐备。'
+)
+if [[ ${1:-} == --check ]]; then check_environment; exit; fi
+# --dry-run/--help 保持纯预览，不能启动 X server、容器或下载。
+preview=false
+for argument in "$@"; do
+    [[ $argument != --dry-run && $argument != --help && $argument != -h ]] || preview=true
+done
+if [[ $preview == false ]]; then
+    check_environment
+    # SSH 无桌面时给现有 RViz/RQT 提供虚拟 X 显示；算法及实验参数不变。
+    if [[ -z ${DISPLAY:-} ]] || ! xdpyinfo >/dev/null 2>&1; then
+        [[ ${RAVEN_XVFB_ACTIVE:-0} != 1 ]] || { echo '虚拟显示启动失败' >&2; exit 1; }
+        export RAVEN_XVFB_ACTIVE=1
+        exec xvfb-run -a -s '-screen 0 1920x1080x24 -nolisten tcp' bash "$0" "$@"
+    fi
+    if [[ ${RAVEN_XVFB_ACTIVE:-0} == 1 ]]; then
+        # Xvfb's hostname-specific cookie must also authorize Docker hostnames.
+        xauth_entries=$(xauth -f "$XAUTHORITY" nlist "$DISPLAY")
+        printf '%s\n' "$xauth_entries" | sed 's/^..../ffff/' | xauth -f "$XAUTHORITY" nmerge -
+    fi
+fi
 
 args=(--env "$SCENE" --task "$TASK" --waypoint-radius "$WAYPOINT_RADIUS"
     --episode-wall-timeout "$EPISODE_WALL_TIMEOUT"

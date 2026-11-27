@@ -1,7 +1,7 @@
 [submodule "AirStack"]
 	path = AirStack
 	url = https://github.com/nagisa1201/AirStack.git
-	branch = raven
+	branch = codex/isaac-sim-6
 
 [submodule "RayFronts"]
 	path = RayFronts

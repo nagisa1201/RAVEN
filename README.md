@@ -79,6 +79,63 @@ AirStack serves as an aerial robot autonomy stack, which supports interface for 
                                   | - Collision avoid |                     |                   |
                                   +-------------------+                     +-------------------+ 
 
+## Ubuntu SSH server setup (Isaac Sim 6.0)
+
+Isaac Sim 6 的传感器自检和短程导航已在 RTX 4080 上验证；完整 600 秒任务、RViz 画面和 8×RTX 5090 服务器尚未验收。一键安装脚本会保留必要的传感器自检与场景预热，临时测试记录不提交到仓库。
+
+This fork targets **Isaac Sim 6.0.0**. The server setup assumes Ubuntu 22.04/24.04
+amd64 and an already loaded NVIDIA **595.71.05** driver (RTX 5090 requires the
+appropriate open kernel driver). Clone the migration branch with its pinned
+AirStack/Pegasus submodules:
+
+```bash
+git clone --recursive --branch codex/isaac-sim-6 https://github.com/nagisa1201/RAVEN.git
+```
+
+Transfer the full checkout when working offline, not just the shell scripts.
+
+The administrator runs once, naming the student's existing Linux account:
+
+```bash
+sudo bash /path/to/RAVEN/RAVEN_setup.sh --user STUDENT
+```
+
+A new Docker installation stores images/builds under the student’s
+`~/.local/share/raven/docker`, so a separate home disk can carry the large files.
+Override this with `--docker-data-root /data/docker` when needed. Existing Docker
+storage is preserved; allow at least 150 GB of free space for the initial build. The
+script installs Docker Engine, Buildx/Compose, NVIDIA Container Toolkit, Git/LFS,
+Python tools and Xvfb/Xauthority for SSH. It grants the student Docker group
+access, builds the experiment images and C++/ROS workspaces, prepares **only the
+scene selected in `run_raven_experiment.sh`**, downloads the actual RADIO/SigLIP
+and enabled InternVL model weights into the runtime caches, and runs checks.
+The final unarmed simulator check also loads the selected scene to prepare its
+material/shader cache; first-time compilation may take several minutes.
+Docker group membership permits privileged container use; the administrator is
+explicitly granting that access. No host CUDA toolkit or host ROS installation
+is needed. It does not replace the existing driver, reboot, or launch navigation.
+
+After the command reports success, reconnect SSH to load the new group and run:
+
+```bash
+cd /path/to/RAVEN
+bash ./run_raven_experiment.sh --check
+bash ./run_raven_experiment.sh
+```
+
+No sudo is needed. Without a usable display, the experiment script starts a
+private virtual X display for the existing GUI processes. The scene, task,
+600-second simulation budget, radii and all other experiment settings remain in
+the same configuration block. GPU visibility is unchanged from the existing
+launcher; this is a single experiment, not eight parallel experiments.
+
+For review without changes: `bash RAVEN_setup.sh --user STUDENT --dry-run`.
+For subsequent code/image updates: `bash build_raven_images.sh --prepare-runtime`.
+Reruns reuse Docker/model caches and an already present scene. Network failures
+stop the setup with a log path; they never report a successful installation.
+Logs are under the student's `~/.cache/raven/{setup,build,isaac6-smoke}/`.
+The original upstream manual instructions below are retained for reference.
+
 ## Setup
 
 First, clone this repository.

@@ -5,3 +5,18 @@ __pycache__/
 .cache/
 .env.local
 .env.*.local
+
+# Local migration notes and experiment artifacts
+/ISAAC6_MIGRATION.md
+/diagnostics/
+/test-results/
+/smoke-results/
+/full-experiment-*/
+*.bag
+*.db3
+*.mcap
+*.prof
+.pytest_cache/
+.coverage
+htmlcov/
+# smoke_isaac6.sh is required by RAVEN_setup.sh; keep it versioned.
