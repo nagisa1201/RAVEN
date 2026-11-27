@@ -59,8 +59,10 @@ offline_apt() (
     local lists
     lists=$(mktemp -d)
     trap 'rm -rf -- "$lists"' EXIT
-    LC_ALL=C apt-get -o Dir::Etc::sourcelist=/dev/null -o Dir::Etc::sourceparts=- \
-        -o Dir::State::lists="$lists" -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= \
+    mkdir -p "$lists/sources.d" "$lists/lists/partial"
+    : > "$lists/sources.list"
+    LC_ALL=C apt-get -o Dir::Etc::sourcelist="$lists/sources.list" -o Dir::Etc::sourceparts="$lists/sources.d" \
+        -o Dir::State::lists="$lists/lists" -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= \
         --no-download --no-remove --no-install-recommends "$@" install "${offline_debs[@]}"
 )
 if [[ -n $DOCKER_DATA_ROOT ]]; then
