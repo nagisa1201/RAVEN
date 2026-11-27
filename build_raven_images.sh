@@ -22,24 +22,32 @@ readonly AIRSTACK_DIR="$RAVEN_ROOT/AirStack"
 readonly BUILD_CONTAINER="raven-build-rayfronts-$$"
 DRY_RUN=false
 PREPARE_RUNTIME=false
+OFFLINE_BUNDLE=''
 COMPILING=false
 CURRENT_STEP='初始化与环境检查'
 
 die() { printf '[错误] %s\n' "$*" >&2; exit 1; }
 usage() {
-    printf '%s\n' '用法：build_raven_images.sh [--prepare-runtime] [--dry-run]' \
+    printf '%s\n' '用法：build_raven_images.sh [--prepare-runtime] [--dry-run] [--import-offline DIR]' \
         '构建 RayFronts + C++ 扩展、AirStack CLI/Robot/Isaac Sim、LVLM。' \
         '各开关在本文件顶部；构建失败立即停止，可再次运行以复用 Docker 缓存。' \
         '日志位于 ~/.cache/raven/build/；镜像位置由 Docker Root Dir 决定。' \
-        '--prepare-runtime 同时准备当前实验场景、模型缓存和 ROS 工作区；不会启动实验。'
+        '--prepare-runtime 同时准备当前实验场景、模型缓存和 ROS 工作区；不会启动实验。' \
+        '--import-offline DIR 校验并导入已准备的离线运行包；不构建镜像、不联网、不需要 sudo。'
 }
-for arg in "$@"; do
-    case "$arg" in
+while (($#)); do
+    case "$1" in
         --dry-run) DRY_RUN=true ;;
         --prepare-runtime) PREPARE_RUNTIME=true ;;
+        --import-offline)
+            (($# >= 2)) || die '--import-offline 缺少目录'
+            OFFLINE_BUNDLE=$(realpath -e -- "$2")
+            PREPARE_RUNTIME=true
+            shift ;;
         -h|--help) usage; exit 0 ;;
-        *) die "不支持参数：$arg；请使用 --help" ;;
+        *) die "不支持参数：$1；请使用 --help" ;;
     esac
+    shift
 done
 for setting in BUILD_LVLM PULL_BASE_IMAGES NO_CACHE INSTALL_HOST_DEPS DOWNLOAD_SCENES; do
     [[ "${!setting}" == true || "${!setting}" == false ]] || die "$setting 必须是 true 或 false"
@@ -99,7 +107,7 @@ if [[ "$DRY_RUN" == false ]]; then
     printf '[日志] %s\n' "$LOG_FILE"
 fi
 
-if [[ "$INSTALL_HOST_DEPS" == true ]]; then
+if [[ "$INSTALL_HOST_DEPS" == true && -z "$OFFLINE_BUNDLE" ]]; then
     run_in "$AIRSTACK_DIR" bash ./airstack.sh install
 fi
 if [[ "$DRY_RUN" == false ]]; then
@@ -134,10 +142,77 @@ build_flags=()
 if [[ "$PULL_BASE_IMAGES" == true ]]; then build_flags+=(--pull); fi
 if [[ "$NO_CACHE" == true ]]; then build_flags+=(--no-cache); fi
 
+offline_flags=()
+if [[ -n "$OFFLINE_BUNDLE" ]]; then
+    CURRENT_STEP='校验并导入离线运行包'
+    for command in zstd sha256sum tar python3; do
+        command -v "$command" >/dev/null || die "缺少 $command；请完成宿主安装"
+    done
+    if [[ "$DRY_RUN" == true ]]; then
+        printf '[预览] 校验 %s，导入镜像和缓存，再在断网容器中编译/检查；不会联网。\n' "$OFFLINE_BUNDLE"
+    else
+        # Require a complete manifest before loading anything. Partial uploads
+        # remain resumable and can never be mistaken for an installable bundle.
+        python3 - "$OFFLINE_BUNDLE" "$RAVEN_ROOT" <<'PYOFFLINE'
+import hashlib, json, pathlib, sys
+bundle, root = map(pathlib.Path, sys.argv[1:])
+metadata = json.loads((bundle/'bundle.json').read_text())
+assert metadata['format'] == 'raven-runtime-v1', '不支持的运行包格式'
+assert metadata['architecture'] == 'amd64', '镜像架构不符'
+expected = {'images.tar.zst', 'models.json', 'assets.tar.zst', 'images.json'}
+assert set(metadata['sha256']) == expected, '运行包清单不完整'
+for name, digest in metadata['sha256'].items():
+    path = bundle/name
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for block in iter(lambda:f.read(8*1024*1024), b''): h.update(block)
+    assert h.hexdigest() == digest, f'{name} 校验失败；等待上传完整后再试'
+    print('SHA256_OK', name, flush=True)
+model_root = bundle/'models'
+for item in json.loads((bundle/'models.json').read_text()):
+    relative = pathlib.PurePosixPath(item['path'])
+    assert relative.parts[0] == '.cache' and '..' not in relative.parts, relative
+    path = model_root/relative
+    assert path.resolve().is_relative_to(model_root.resolve()), f'缓存链接越界：{path}'
+    if 'link' in item:
+        assert path.is_symlink() and str(path.readlink()) == item['link'] and path.exists(), f'缓存链接缺失：{path}'
+    else:
+        assert path.is_file() and not path.is_symlink() and path.stat().st_size == item['size'], f'模型文件缺失：{path}'
+        h = hashlib.sha256()
+        with path.open('rb') as f:
+            for block in iter(lambda:f.read(8*1024*1024), b''): h.update(block)
+        assert h.hexdigest() == item['sha256'], f'模型校验失败：{path}'
+print('MODEL_CACHE_OK', flush=True)
+scene = metadata['scene']
+assert scene.isascii() and scene.replace('_','').isalnum(), '无效场景名'
+scene_file = root/'AirStack/scenes'/scene/(scene+'_Export.usd')
+assert scene_file.is_file(), f'请先同步当前场景：{scene_file}'
+assert hashlib.sha256(scene_file.read_bytes()).hexdigest() in metadata['scene_sha256'], '当前场景与运行包不匹配'
+PYOFFLINE
+        zstd -dc -- "$OFFLINE_BUNDLE/images.tar.zst" | docker load
+        python3 - "$OFFLINE_BUNDLE/images.json" <<'PYIMAGES'
+import json, subprocess, sys
+for image in json.load(open(sys.argv[1])):
+    actual = subprocess.check_output(['docker','image','inspect','--format','{{.Id}}',image['tag']],text=True).strip()
+    assert actual == image['id'], (image['tag'],actual,image['id'])
+    print('IMAGE_OK',image['tag'],flush=True)
+PYIMAGES
+        # These archives contain only the selected model cache and scene assets;
+        # no credentials, system files, or shell configuration are included.
+        cp -a --no-preserve=ownership "$OFFLINE_BUNDLE/models/." "$HOME/"
+        tar --zstd --no-same-owner -xf "$OFFLINE_BUNDLE/assets.tar.zst" -C "$RAVEN_ROOT"
+    fi
+    offline_flags=(--network none -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 -e HF_HUB_DISABLE_TELEMETRY=1)
+fi
+
 CURRENT_STEP='构建 RayFronts 镜像'
 printf '\n[1/4] %s\n' "$CURRENT_STEP"
+if [[ -z "$OFFLINE_BUNDLE" ]]; then
 build_in "$RAVEN_ROOT/RayFronts" docker build "${build_flags[@]}" \
     -f docker/desktop.Dockerfile -t rayfronts:desktop .
+else
+    printf '使用离线镜像，跳过构建。\n'
+fi
 
 CURRENT_STEP='编译并验证 RayFronts C++ 扩展'
 printf '\n[2/4] 在临时 CPU 容器内%s\n' "$CURRENT_STEP"
@@ -157,13 +232,15 @@ COMPILING=false
 CURRENT_STEP='构建 AirStack Robot 和 Isaac Sim'
 printf '\n[3/4] %s（CLI 镜像缺失时由 AirStack 自动构建）\n' "$CURRENT_STEP"
 # 只构建此实验用到的服务；不构建文档站、Gazebo/simple-sim、Jetson 等其他用途镜像。
-build_in "$AIRSTACK_DIR" bash ./airstack.sh build "${build_flags[@]}" isaac-sim robot
+if [[ -z "$OFFLINE_BUNDLE" ]]; then
+    build_in "$AIRSTACK_DIR" bash ./airstack.sh build "${build_flags[@]}" isaac-sim robot
+fi
 
 CURRENT_STEP='构建 LVLM'
 printf '\n[4/4] %s\n' "$CURRENT_STEP"
-if [[ "$BUILD_LVLM" == true ]]; then
+if [[ "$BUILD_LVLM" == true && -z "$OFFLINE_BUNDLE" ]]; then
     build_in "$RAVEN_ROOT/LVLM" docker build "${build_flags[@]}" -t lvlm:latest .
-else
+elif [[ "$BUILD_LVLM" == false ]]; then
     printf 'BUILD_LVLM=false，跳过；运行实验时也请将 USE_LVLM 改成 false。\n'
 fi
 
@@ -173,8 +250,12 @@ fi
 if [[ "$PREPARE_RUNTIME" == true ]]; then
     CURRENT_STEP='准备当前实验的场景、模型和 ROS 工作区'
     if [[ "$DRY_RUN" == true ]]; then
+        if [[ -n "$OFFLINE_BUNDLE" ]]; then
+            printf '%s\n' '[预览] 检查已同步场景；断网编译 ROS，加载本地模型，并验证当前场景传感器。'
+        else
         printf '%s\n' '[预览] 按 run_raven_experiment.sh 读取场景/LVLM 设置；HTTP Range 只取选定场景。' \
             '[预览] 预编译 Robot ROS 工作区、检查 RayFronts C++，预取 RADIO/SigLIP 和启用的 InternVL 权重。'
+        fi
     else
         deployment=$(bash "$RAVEN_ROOT/run_raven_experiment.sh" --deployment-config)
         scene=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["scene"])' "$deployment")
@@ -182,6 +263,9 @@ if [[ "$PREPARE_RUNTIME" == true ]]; then
         [[ $use_lvlm != true || $BUILD_LVLM == true ]] || die '实验启用了 LVLM，但 BUILD_LVLM=false'
         # Read ZIP directory/ranges only. Never download the other scenes, and
         # reject HTTP servers that silently ignore Range instead of fetching 4+ GB.
+        if [[ -n "$OFFLINE_BUNDLE" ]]; then
+            [[ -s "$AIRSTACK_DIR/scenes/$scene/${scene}_Export.usd" ]] || die '离线包没有当前场景'
+        else
         python3 - "$AIRSTACK_DIR/scenes" "$scene" <<'PYSCENE'
 import io, os, pathlib, re, shutil, sys, time, urllib.request, zipfile
 root, scene = pathlib.Path(sys.argv[1]), sys.argv[2]
@@ -251,10 +335,11 @@ shutil.copytree(staging, root/scene, dirs_exist_ok=True)
 shutil.rmtree(staging)
 print('SCENE_READY', expected, flush=True)
 PYSCENE
+        fi
         # Compile with the same mounts used at experiment time, without starting
         # Compose services, simulation, navigation, RViz or a persistent container.
         robot_image="${PROJECT_DOCKER_REGISTRY}/${PROJECT_NAME}:v${DOCKER_IMAGE_TAG}_robot-x86-64"
-        run docker run --rm --init --runtime runc -e NVIDIA_VISIBLE_DEVICES=void \
+        run docker run --rm --init --runtime runc "${offline_flags[@]}" -e NVIDIA_VISIBLE_DEVICES=void \
             -v "$AIRSTACK_DIR:/root/AirStack" \
             -v "$AIRSTACK_DIR/common/ros_packages:/root/AirStack/robot/ros_ws/src/common" \
             --entrypoint /bin/bash "$robot_image" -ec \
@@ -265,7 +350,7 @@ source install/setup.bash
 ros2 pkg prefix robot_bringup
 ros2 pkg prefix behavior_tree_msgs'
         mkdir -p "$HOME/.cache/raven/torch" "$HOME/.cache/raven/huggingface" "$HOME/.cache/huggingface"
-        run docker run --rm --init --runtime runc -e NVIDIA_VISIBLE_DEVICES=void \
+        run docker run --rm --init --runtime runc "${offline_flags[@]}" -e NVIDIA_VISIBLE_DEVICES=void \
             -e HF_HOME=/root/.cache/huggingface \
             -v "$RAVEN_ROOT/RayFronts:/workspace/RayFronts" -w /workspace/RayFronts \
             -v "$HOME/.cache/raven/torch:/root/.cache/torch" \
@@ -291,7 +376,7 @@ with initialize_config_dir(config_dir="/workspace/RayFronts/rayfronts/configs", 
     print("RAYFRONTS_MODEL_READY", type(model).__name__, flush=True)
 PYMODEL'
         if [[ $use_lvlm == true ]]; then
-            run docker run --rm --init --runtime runc -e NVIDIA_VISIBLE_DEVICES=void \
+            run docker run --rm --init --runtime runc "${offline_flags[@]}" -e NVIDIA_VISIBLE_DEVICES=void \
                 -e HF_HOME=/root/.cache/huggingface -e TRANSFORMERS_CACHE=/root/.cache/huggingface/hub \
                 -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
                 --entrypoint python3 lvlm:latest -u -c \
@@ -306,6 +391,11 @@ print("LVLM_MODEL_READY", path, flush=True)'
         run docker run --rm --gpus all --entrypoint nvidia-smi \
             "${PROJECT_DOCKER_REGISTRY}/${PROJECT_NAME}:v${ISAAC_SIM_IMAGE_TAG}_isaac-sim" \
             --query-gpu=name,driver_version --format=csv,noheader
+        if [[ -n "$OFFLINE_BUNDLE" ]]; then
+            [[ -s "$AIRSTACK_DIR/scenes/$scene/.raven-offline/isaac-assets/manifest.json" ]] || die '离线资源清单缺失'
+            run env RAVEN_SMOKE_SCENE="$scene" RAVEN_SMOKE_OFFLINE=1 bash "$RAVEN_ROOT/smoke_isaac6.sh"
+            touch "$AIRSTACK_DIR/scenes/$scene/.raven-offline/READY"
+        fi
     fi
 fi
 CURRENT_STEP='检查构建结果'

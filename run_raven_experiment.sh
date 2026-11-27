@@ -47,6 +47,14 @@ PYCONFIG
     exit 0
 fi
 
+# An imported bundle uses the same scene/parameters with local asset addresses.
+# The importer writes READY only after its offline build/model checks pass.
+offline_dir="$RAVEN_ROOT/AirStack/scenes/$SCENE/.raven-offline"
+if [[ -f "$offline_dir/READY" ]]; then
+    export RAVEN_OFFLINE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1
+    export ISAACSIM_ASSET_ROOT="/isaac-sim/AirStack/scenes/$SCENE/.raven-offline/isaac-assets"
+fi
+
 check_environment() (
     set +u
     source "$RAVEN_ROOT/AirStack/.env"
@@ -63,6 +71,13 @@ check_environment() (
     docker image inspect "${images[@]}" >/dev/null || { echo '实验镜像未构建完整；执行 build_raven_images.sh --prepare-runtime' >&2; exit 1; }
     [[ -s "$RAVEN_ROOT/AirStack/scenes/$SCENE/${SCENE}_Export.usd" ]] || { echo "缺少 $SCENE 场景；执行 build_raven_images.sh --prepare-runtime" >&2; exit 1; }
     [[ -s "$RAVEN_ROOT/RayFronts/rayfronts/annotations/$SCENE.json" ]] || { echo '缺少场景评估标注' >&2; exit 1; }
+    if [[ ${RAVEN_OFFLINE:-0} == 1 ]]; then
+        [[ -s "$offline_dir/isaac-assets/Isaac/Sensors/Stereolabs/ZED_X/ZED_X.usdc" &&
+           -s "$offline_dir/isaac-assets/Isaac/Sensors/Ouster/OS1/OS1.usd" ]] || {
+            echo '离线传感器资源缺失，请重新导入完整运行包' >&2; exit 1;
+        }
+        echo '[离线模式] 模型使用本地缓存，Isaac 使用已导入的本地资源。'
+    fi
     echo '[检查通过] Isaac Sim 6.0 镜像、GPU、Docker 权限、SSH 显示工具及当前场景齐备。'
 )
 if [[ ${1:-} == --check ]]; then check_environment; exit; fi

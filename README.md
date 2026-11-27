@@ -153,10 +153,29 @@ It contains `bundle.json`, `SHA256SUMS`, and `debs/*.deb`, prepared on a connect
 machine against the server's package inventory and transferred over SSH.
 
 After the host installation and a new SSH login, the student can import saved
-Docker images and copy model/Isaac asset files without sudo. **Host installation
-alone does not make the experiment offline-ready:** model loading must use local
-files, and Isaac's referenced assets must resolve locally. Full offline runtime
-validation is still required before claiming that the experiment can run.
+Docker images and copy model/Isaac asset files without sudo:
+
+```bash
+bash build_raven_images.sh --import-offline /path/to/runtime-bundle
+bash run_raven_experiment.sh --check
+bash run_raven_experiment.sh
+```
+
+The runtime bundle contains `bundle.json`, `images.json`, `images.tar.zst`,
+`models.json`, a `models/.cache/` directory, and `assets.tar.zst`. Shared Hugging Face
+blobs accompany the snapshot links; each file and link is checked before import.
+Transfer the selected scene directory
+alongside the full checkout before importing; this bundle does not include other
+maps. The importer checks SHA-256 hashes and image IDs, loads the five saved
+images, extracts the selected model/sensor files, compiles C++/ROS with networking
+disabled, and runs an offline sensor check. It never runs APT, builds/pulls an
+image, or starts navigation. A failed or incomplete upload stops before import.
+
+Only after checks pass does it mark the scene ready for offline use. The normal
+experiment wrapper then enables local Hugging Face caches and the local Isaac
+asset root, and disables Kit extension registry access. Experiment parameters
+remain in the existing configuration block. **Host installation alone does not
+make the experiment offline-ready; the runtime import must also succeed.**
 
 ## Setup
 

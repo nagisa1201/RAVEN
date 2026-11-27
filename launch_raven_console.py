@@ -916,6 +916,10 @@ class Console:
         cmd = ['docker', 'exec', '-e', 'PYTHONUNBUFFERED=1', '-e', 'RCUTILS_LOGGING_BUFFERED_STREAM=0']
         values = dict(self.args.pose, ISAAC_SIM_SCRIPT_NAME=self.args.env + '_Launch.py',
                       ROS_DOMAIN_ID=self.env.get('ROS_DOMAIN_ID', '1'))
+        for key in ('HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'HF_HUB_DISABLE_TELEMETRY',
+                    'ISAACSIM_ASSET_ROOT'):
+            if key in self.env:
+                values[key] = self.env[key]
         values.update(extra or {})
         for key, value in values.items():
             cmd += ['-e', key + '=' + value]
@@ -993,9 +997,10 @@ class Console:
         for name in self.containers:
             self.spawn('DOCKER-' + name, ['docker', 'logs', '--follow', '--since', '1m', name])
         scene = '/isaac-sim/AirStack/simulation/isaac-sim/launch_scripts/' + self.args.env + '_Launch.py'
+        offline_kit = ' --/app/extensions/registryEnabled=false' if self.env.get('RAVEN_OFFLINE') == '1' else ''
         self.spawn('ISAAC', self.exec_cmd('isaac-sim',
                    'run_isaac_python ' + shlex.quote(scene) +
-                   ' --ext-folder /isaac-sim/.local/share/ov/data/documents/Kit/shared/exts',
+                   ' --ext-folder /isaac-sim/.local/share/ov/data/documents/Kit/shared/exts' + offline_kit,
                    {'PLAY_SIM_ON_START': 'true', 'RAVEN_HEADLESS': '1' if self.args.low_vram else '0'}))
         launch = shlex.join(['ros2', 'launch', self.env.get('ROBOT_LAUNCH_PACKAGE', 'robot_bringup'),
                              self.env.get('ROBOT_LAUNCH_FILE', 'robot.launch.xml')])
