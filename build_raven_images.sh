@@ -189,7 +189,8 @@ scene_file = root/'AirStack/scenes'/scene/(scene+'_Export.usd')
 assert scene_file.is_file(), f'请先同步当前场景：{scene_file}'
 assert hashlib.sha256(scene_file.read_bytes()).hexdigest() in metadata['scene_sha256'], '当前场景与运行包不匹配'
 PYOFFLINE
-        zstd -dc -- "$OFFLINE_BUNDLE/images.tar.zst" | docker load
+        # Large-window compression reduces transfer size; cap decoding at 2 GiB.
+        zstd -dc --long=31 -- "$OFFLINE_BUNDLE/images.tar.zst" | docker load
         python3 - "$OFFLINE_BUNDLE/images.json" <<'PYIMAGES'
 import json, subprocess, sys
 for image in json.load(open(sys.argv[1])):
